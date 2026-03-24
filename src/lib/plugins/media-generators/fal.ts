@@ -24,6 +24,43 @@ import type {
 
 const FAL_QUEUE_BASE = "https://queue.fal.run";
 
+const ALLOWED_FAL_HOSTS = new Set([
+  "queue.fal.run",
+  "fal.run",
+]);
+
+/**
+ * Validate that a URL points to a trusted Fal.ai origin.
+ * Prevents SSRF by ensuring user-controlled tokens cannot redirect
+ * authenticated requests to arbitrary servers.
+ *
+ * The modelId is user-supplied input. We intentionally do NOT maintain a
+ * whitelist of valid model IDs because Fal.ai adds new models frequently
+ * and we don't want to ship an update every time they do.
+ *
+ * We also cannot safely pass the modelId as a query-string parameter
+ * because Fal.ai model IDs contain slashes (e.g. "fal-ai/flux-pro/v1.1-ultra")
+ * and the queue URL embeds them directly in the path:
+ *   https://queue.fal.run/fal-ai/flux-pro/v1.1-ultra/requests/<id>/status
+ *
+ * So we let the user-controlled modelId form the full URL — even a
+ * malicious modelId can at most break the path — and then we parse the
+ * resulting URL and assert that the hostname resolves to an allowed
+ * Fal.ai domain. This ensures the server-side FAL_API_KEY is never sent
+ * anywhere except Fal.ai, regardless of what the client sends.
+ */
+export function assertFalOrigin(url: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error("Invalid Fal.ai URL");
+  }
+  if (parsed.protocol !== "https:" || !ALLOWED_FAL_HOSTS.has(parsed.hostname)) {
+    throw new Error("Invalid Fal.ai URL: untrusted origin");
+  }
+}
+
 function parseModels(envVar: string | undefined, type: "image" | "video" | "audio"): MediaGeneratorModel[] {
   if (!envVar) return [];
   return envVar
@@ -112,6 +149,8 @@ async function submitToFalQueue(
 export async function getFalRequestStatus(
   statusUrl: string
 ): Promise<FalStatusResponse> {
+  assertFalOrigin(statusUrl);
+
   const apiKey = process.env.FAL_API_KEY;
   if (!apiKey) throw new Error("FAL_API_KEY is not configured");
 
@@ -136,6 +175,8 @@ export async function getFalRequestStatus(
 export async function getFalRequestResult(
   responseUrl: string
 ): Promise<FalImageOutput | FalVideoOutput | FalAudioOutput> {
+  assertFalOrigin(responseUrl);
+
   const apiKey = process.env.FAL_API_KEY;
   if (!apiKey) throw new Error("FAL_API_KEY is not configured");
 
